@@ -1,0 +1,437 @@
+---
+title: "FinalProject"
+author: "Chase Holdener and John Tobin"
+output: html_document
+date: "2023-05-02"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readxl)  # Required for reading Excel files
+library(tidyr)  # Required for data manipulation
+library(dplyr)  # Required for data manipulation
+library(plotly)  # Required for interactive plots
+library(cluster)  # Required for clustering analysis
+library(factoextra)  # Required for clustering analysis
+library(ggplot2)  # Required for plotting
+library(patchwork)  # Required for combining plots
+
+### Data reading and processing
+
+# Read Excel file (Change the path to relevant location on your computer)
+pbio <- read_excel("/Users/johntobin/Documents/STA-230/FinalProject/pbio.xlsx", sheet = "Mouse macrophage dataset")
+
+# Remove unnecessary columns from the 'genes' data frame
+genes <- select(pbio, -"Gene ID (Ensembl if available, else NCBI)",
+                -"Transcript IDs (Ensembl and/or NCBI)",
+                -"No. of NCBI-sourced transcripts",
+                -"No. of transcripts",
+                -"No. of Ensembl-sourced transcripts",
+                -"Description",
+                -"Coordinates",
+                -"...475",
+                -"...476",
+                -"...477",
+                -"...478",
+                -"...479",
+                -"...480",
+                -"...481",
+                -"...482",
+                -"...483",
+                -"...484",
+                -"...485",
+                -"...486",
+                -"...487",
+                -"...488")
+
+# Remove the first 11 rows from the 'genes' data frame
+genes_new <- genes[-c(1:11), ]
+
+# Set column names of 'genes_new' data frame using the 11th row of 'genes'
+colnames(genes_new) <- genes[11,]
+
+# Transpose the 'genes_new' data frame to convert genes into columns
+gene_expressions <- data.frame(t(genes_new))
+
+# Extract column names from 'genes_new' except the first column
+cols <- colnames(genes_new[,-1])
+
+# Set column names of 'gene_expressions' data frame using the first row of 'gene_expressions'
+colnames(gene_expressions) <- gene_expressions[1,]
+
+# Remove the first row from 'gene_expressions' to eliminate redundant column names
+gene_expressions <- gene_expressions[-1,]
+
+# Create a copy of 'gene_expressions' as 'gene_expressions_tissue' for later use
+gene_expressions_tissue <- gene_expressions
+
+# Add a new column 'TissueType' to 'gene_expressions_tissue' with values from 'cols'
+gene_expressions_tissue$TissueType <- cols
+
+# Convert the values in 'gene_expressions' to numeric format
+gene_expressions <- apply(gene_expressions, 2, function(x) as.numeric(as.character(x)))
+
+#########################################################################
+# First PCA
+
+# Perform Principal Component Analysis (PCA) on 'gene_expressions' with centering and scaling
+pca <- prcomp(gene_expressions, center = TRUE, scale. = TRUE)
+
+#########################################################################
+# Calculating standard deviations within tissues.
+
+# Convert the 'genes_new' data frame to long format using 'Tissue' as the column name and 'Expression' as the value
+genes_long <- pivot_longer(genes_new,
+                           cols = !"Tissue source",
+                           names_to = "Tissue",
+                           values_to = "Expression")
+
+# Rename the first column of 'genes_long' to "Gene"
+colnames(genes_long)[1] <- "Gene"
+
+# Calculate the standard deviation of expression values per gene using 'genes_long'
+std_devs <- genes_long %>%
+  group_by(Gene) %>%
+  summarize(StandardDeviation = sd(Expression))
+
+#########################################################################
+# Calculating DBT - Deviation Between Tissues
+
+# Calculate the standard deviation of expression for each gene within each tissue
+newColumn <- genes_long %>%
+  group_by(Gene, Tissue) %>%
+  summarize(DeviationPerTissue = sd(Expression)) %>%
+  group_by(Gene) %>%
+  summarize(DeviationWithinTissues = mean(DeviationPerTissue))
+
+# Perform an inner join between std_devs and newColumn on the "Gene" column
+DBT <- inner_join(x = std_devs, y = newColumn, by = "Gene")
+
+# Calculate the DBT (Deviation Between Tissues) by dividing the standard deviation by the deviation within tissues
+DBT$DBT <- DBT$StandardDeviation / DBT$DeviationWithinTissues
+```
+
+```{r}
+##########################################################################
+# Creating dataframes for testing different numbers of the most variable genes as 
+# measured by SD (Standard Deviation) and DBT (Deviation Between Tissues) to see 
+# which yield the cleanest PCA result
+
+# Sort the DBT dataframe in descending order based on the DBT values
+DBT <- DBT[order(-DBT$DBT), ]
+
+# Select the top x genes based on DBT values
+top10DBT <- DBT[1:10, ]
+top20DBT <- DBT[1:20, ]
+top30DBT <- DBT[1:30, ]
+top50DBT <- DBT[1:50, ]
+top100DBT <- DBT[1:100, ]
+top500DBT <- DBT[1:500, ]
+top1000DBT <- DBT[1:1000, ]
+
+# Sort the DBT dataframe in descending order based on the standard deviation values
+DBT <- DBT[order(-DBT$StandardDeviation), ]
+
+# Select the top x genes based on standard deviation values
+top10SD <- DBT[1:10, ]
+top20SD <- DBT[1:20, ]
+top30SD <- DBT[1:30, ]
+top50SD <- DBT[1:50, ]
+top100SD <- DBT[1:100, ]
+top500SD <- DBT[1:500, ]
+top1000SD <- DBT[1:1000, ]
+
+```
+
+Each section below is a distinct test of the top x most variable genes as measured
+by both SD and DBT using both standardized and unstandardized expression values.
+
+
+```{r}
+# 10 genes DBT
+
+# Subset the gene expressions data frame to include only the top 10 genes selected by DBT
+expressionsTop10DBT <- data.frame(gene_expressions[, colnames(gene_expressions) %in% top10DBT$Gene])
+# Make a standardized version of the gene expression data
+expressionsTop10DBT_STD <- scale(expressionsTop10DBT)
+
+# Perform Principal Component Analysis (PCA) on the selected gene expression data
+PCATop10DBT <- prcomp(expressionsTop10DBT)
+PCATop10DBT_STD <- prcomp(expressionsTop10DBT_STD)
+
+# Generate scree plots to visualize the explained variance by each principal component
+screeplot<- fviz_screeplot(PCATop10DBT)
+screeplot
+screeplot_STD <- fviz_screeplot(PCATop10DBT_STD)
+screeplot_STD
+
+# Extract the scores (PC1, PC2, PC3) from PCA and add cluster labels
+Top10DBTScores <- as.data.frame(PCATop10DBT$x)[, 1:3]
+Top10DBTScores$clusterLabels = gene_expressions_tissue$TissueType
+
+Top10DBTScores_STD <- as.data.frame(PCATop10DBT_STD$x)[, 1:3]
+Top10DBTScores_STD$clusterLabels = gene_expressions_tissue$TissueType
+
+# Generate a 3D scatter plot of PC1, PC2, PC3 with cluster labels
+plot_ly(data = Top10DBTScores, type = "scatter3d", x = ~PC1, y = ~PC2, z = ~PC3, color = ~clusterLabels)
+plot_ly(data = Top10DBTScores_STD, type = "scatter3d", x = ~PC1, y = ~PC2, z = ~PC3, color = ~clusterLabels)
+```
+
+```{r}
+# 10 genes SD
+
+# Subset the gene expressions data frame to include only the top 10 genes selected by SD
+expressionsTop10SD <- data.frame(gene_expressions[, colnames(gene_expressions) %in% top10SD$Gene])
+
+# Perform Principal Component Analysis (PCA) on the selected gene expression data
+PCATop10SD <- prcomp(expressionsTop10SD)
+
+# Generate a scree plot to visualize the explained variance by each principal component
+screeplot <- fviz_screeplot(PCATop10SD)
+screeplot
+
+# Extract the scores (PC1, PC2, PC3) from PCA and add cluster labels
+Top10SDScores <- as.data.frame(PCATop10SD$x)[, 1:3]
+Top10SDScores$clusterLabels = gene_expressions_tissue$TissueType
+
+# Generate a 3D scatter plot of PC1, PC2, PC3 with cluster labels
+plot_ly(data = Top10SDScores, type = "scatter3d", x = ~PC1, y = ~PC2, z = ~PC3, color = ~clusterLabels)
+
+# View the rotation matrix
+PCATop10SD$rotation
+```
+
+```{r}
+# 500 genes DBT
+
+# Subset the gene expressions data frame to include only the top 500 genes selected by DBT
+expressionsTop500DBT <- data.frame(gene_expressions[, colnames(gene_expressions) %in% top500DBT$Gene])
+# Make a standardized version of the gene expression data
+expressionsTop500DBT_STD <- scale(expressionsTop500DBT)
+
+# Perform Principal Component Analysis (PCA) on the selected gene expression data
+PCATop500DBT <- prcomp(expressionsTop500DBT)
+PCATop500DBT_STD <- prcomp(expressionsTop500DBT_STD)
+
+# Generate scree plots to visualize the explained variance by each principal component
+screeplot<- fviz_screeplot(PCATop500DBT)
+screeplot
+screeplot_STD <- fviz_screeplot(PCATop500DBT_STD)
+screeplot_STD
+
+# Extract the scores (PC1, PC2, PC3) from PCA and add cluster labels
+Top500DBTScores <- as.data.frame(PCATop500DBT$x)[, 1:3]
+Top500DBTScores$clusterLabels = gene_expressions_tissue$TissueType
+
+Top500DBTScores_STD <- as.data.frame(PCATop500DBT_STD$x)[, 1:3]
+Top500DBTScores_STD$clusterLabels = gene_expressions_tissue$TissueType
+
+# Generate a 3D scatter plot of PC1, PC2, PC3 with cluster labels
+plot_ly(data = Top500DBTScores, type = "scatter3d", x = ~PC1, y = ~PC2, z = ~PC3, color = ~clusterLabels)
+plot_ly(data = Top500DBTScores_STD, type = "scatter3d", x = ~PC1, y = ~PC2, z = ~PC3, color = ~clusterLabels)
+
+PCATop500DBT$rotation
+```
+
+```{r}
+# 500 genes SD
+
+# Subset the gene expressions data frame to include only the top 500 genes selected by SD
+expressionsTop500SD <- data.frame(gene_expressions[, colnames(gene_expressions) %in% top500SD$Gene])
+# Make a standardized version of the gene expression data
+expressionsTop500SD_STD <- scale(expressionsTop500SD)
+
+# Perform Principal Component Analysis (PCA) on the selected gene expression data
+PCATop500SD <- prcomp(expressionsTop500SD)
+PCATop500SD_STD <- prcomp(expressionsTop500SD_STD)
+
+# Generate scree plots to visualize the explained variance by each principal component
+screeplot<- fviz_screeplot(PCATop500SD)
+screeplot
+screeplot_STD <- fviz_screeplot(PCATop500SD_STD)
+screeplot_STD
+
+# Extract the scores (PC1, PC2, PC3) from PCA and add cluster labels
+Top500SDScores <- as.data.frame(PCATop500SD$x)[, 1:3]
+Top500SDScores$clusterLabels = gene_expressions_tissue$TissueType
+
+Top500SDScores_STD <- as.data.frame(PCATop500SD_STD$x)[, 1:3]
+Top500SDScores_STD$clusterLabels = gene_expressions_tissue$TissueType
+
+# Generate a 3D scatter plot of PC1, PC2, PC3 with cluster labels
+plot_ly(data = Top500SDScores, type = "scatter3d", x = ~PC1, y = ~PC2, z = ~PC3, color = ~clusterLabels)
+plot_ly(data = Top500SDScores_STD, type = "scatter3d", x = ~PC1, y = ~PC2, z = ~PC3, color = ~clusterLabels)
+
+PCATop500SD$rotation
+```
+
+```{r}
+# 18175 genes SD
+
+# Make a standardized version of the gene expression data
+gene_expressions_STD <- scale(gene_expressions)
+
+# Perform Principal Component Analysis (PCA) on the selected gene expression data
+PCA_All <- prcomp(gene_expressions)
+PCA_All_STD <- prcomp(gene_expressions_STD)
+
+# Extract the scores (PC1, PC2, PC3) from PCA and add cluster labels
+PCAScores <- as.data.frame(PCA_All$x)[, 1:3]
+PCAScores$clusterLabels = gene_expressions_tissue$TissueType
+
+PCAScores_STD <- as.data.frame(PCA_All_STD$x)[, 1:3]
+PCAScores_STD$clusterLabels = gene_expressions_tissue$TissueType
+
+# Generate a 3D scatter plot of PC1, PC2, PC3 with cluster labels
+plot_ly(data = PCAScores, type = "scatter3d", x = ~PC1, y = ~PC2, z = ~PC3, color = ~clusterLabels)
+plot_ly(data = PCAScores_STD, type = "scatter3d", x = ~PC1, y = ~PC2, z = ~PC3, color = ~clusterLabels)
+
+PCATop500SD$rotation
+```
+
+```{r}
+# 1000 genes SD -- Most useful in our analysis
+
+# Subset the gene expressions data frame to include only the top 1000 genes selected by SD
+expressionsTop1000SD <- data.frame(gene_expressions[, colnames(gene_expressions) %in% top1000SD$Gene])
+# Make a standardized version of the gene expression data
+expressionsTop1000SD_STD <- scale(expressionsTop1000SD)
+
+# Perform Principal Component Analysis (PCA) on the selected gene expression data
+PCATop1000SD <- prcomp(expressionsTop1000SD)
+PCATop1000SD_STD <- prcomp(expressionsTop1000SD_STD)
+
+# Generate scree plots to visualize the explained variance by each principal component
+screeplot<- fviz_screeplot(PCATop1000SD)
+screeplot
+screeplot_STD <- fviz_screeplot(PCATop1000SD_STD)
+screeplot_STD
+
+# Extract the scores (PC1, PC2, PC3) from PCA and add cluster labels
+Top1000SDScores <- as.data.frame(PCATop1000SD$x)[, 1:3]
+Top1000SDScores$clusterLabels = gene_expressions_tissue$TissueType
+
+Top1000SDScores_STD <- as.data.frame(PCATop1000SD_STD$x)[, 1:3]
+Top1000SDScores_STD$clusterLabels = gene_expressions_tissue$TissueType
+
+# Generate a 3D scatter plot of PC1, PC2, PC3 with cluster labels
+plot_ly(data = Top1000SDScores, type = "scatter3d", x = ~PC1, y = ~PC2, z = ~PC3, color = ~clusterLabels)
+plot_ly(data = Top1000SDScores_STD, type = "scatter3d", x = ~PC1, y = ~PC2, z = ~PC3, color = ~clusterLabels)
+
+# Extract the scores (PC4, PC5, PC6) from PCA and add cluster labels
+Top1000SDScores_STD <- as.data.frame(PCATop1000SD_STD$x)[, 4:6]
+Top1000SDScores_STD$clusterLabels = gene_expressions_tissue$TissueType
+
+# Generate a 3D scatter plot of PC4, PC5, PC6 with cluster labels
+plot_ly(data = Top1000SDScores_STD, type = "scatter3d", x = ~PC4, y = ~PC5, z = ~PC6, color = ~clusterLabels)
+
+rotation <- PCATop1000SD$rotation
+
+rotationAbs <- abs(rotation)
+```
+
+```{r}
+# 1000 genes DBT
+
+# Subset the gene expressions data frame to include only the top 1000 genes selected by DBT
+expressionsTop1000DBT <- data.frame(gene_expressions[, colnames(gene_expressions) %in% top1000DBT$Gene])
+# Make a standardized version of the gene expression data
+expressionsTop1000DBT_STD <- scale(expressionsTop1000DBT)
+
+# Perform Principal Component Analysis (PCA) on the selected gene expression data
+PCATop1000DBT <- prcomp(expressionsTop1000DBT)
+PCATop1000DBT_STD <- prcomp(expressionsTop1000DBT_STD)
+
+# Generate scree plots to visualize the explained variance by each principal component
+screeplot<- fviz_screeplot(PCATop1000DBT)
+screeplot
+screeplot_STD <- fviz_screeplot(PCATop1000DBT_STD)
+screeplot_STD
+
+# Extract the scores (PC1, PC2, PC3) from PCA and add cluster labels
+Top1000DBTScores <- as.data.frame(PCATop1000DBT$x)[, 1:3]
+Top1000DBTScores$clusterLabels = gene_expressions_tissue$TissueType
+
+Top1000DBTScores_STD <- as.data.frame(PCATop1000DBT_STD$x)[, 1:3]
+Top1000DBTScores_STD$clusterLabels = gene_expressions_tissue$TissueType
+
+# Generate a 3D scatter plot of PC1, PC2, PC3 with cluster labels
+plot_ly(data = Top1000DBTScores, type = "scatter3d", x = ~PC1, y = ~PC2, z = ~PC3, color = ~clusterLabels)
+plot_ly(data = Top1000DBTScores_STD, type = "scatter3d", x = ~PC1, y = ~PC2, z = ~PC3, color = ~clusterLabels)
+
+# Extract the scores (PC7, PC8, PC9) from PCA and add cluster labels
+Top1000DBTScores_STD <- as.data.frame(PCATop1000DBT_STD$x)[, 7:9]
+Top1000DBTScores_STD$clusterLabels = gene_expressions_tissue$TissueType
+
+# Generate a 3D scatter plot of PC7, PC8, PC9 with cluster labels
+plot_ly(data = Top1000DBTScores_STD, type = "scatter3d", x = ~PC7, y = ~PC8, z = ~PC9, color = ~clusterLabels)
+
+PCATop1000DBT$rotation
+```
+
+The following code generates plots to view the PCA that we chose as the best
+(top 1000 genes as measured by standard deviation, standardized). We then do 
+k-means clustering with 14 cluster centers, as there are 14 tissue types, and 
+compare those clusters to the tissue "clusters" in the data.
+
+```{r}
+# PCA ggplots 
+
+Top1000SDSTDPCA <- as.data.frame(PCATop1000SD_STD$x)[, 1:14]
+Top1000SDSTDPCA$clusterLabels = gene_expressions_tissue$TissueType
+
+ggplot(Top1000SDSTDPCA, aes(x = PC1, y = PC2, color = clusterLabels)) +
+  geom_point(size = 2) + theme_light() + guides(color = guide_legend(title = "Tissue Type"))
+ggplot(Top1000SDSTDPCA, aes(x = PC3, y = PC4, color = clusterLabels)) +
+  geom_point(size = 2) + theme_light()
+ggplot(Top1000SDSTDPCA, aes(x = PC5, y = PC6, color = clusterLabels)) +
+  geom_point(size = 2) + theme_light()
+ggplot(Top1000SDSTDPCA, aes(x = PC7, y = PC8, color = clusterLabels)) +
+  geom_point(size = 2) + theme_light()
+ggplot(Top1000SDSTDPCA, aes(x = PC9, y = PC10, color = clusterLabels)) +
+  geom_point(size = 2) + theme_light()
+ggplot(Top1000SDSTDPCA, aes(x = PC11, y = PC12, color = clusterLabels)) +
+  geom_point(size = 2) + theme_light()
+ggplot(Top1000SDSTDPCA, aes(x = PC13, y = PC14, color = clusterLabels)) +
+  geom_point(size = 2) + theme_light()
+```
+
+```{r}
+# k-means clustering
+
+# Perform k-means clustering with 14 cluster centers using expressionsTop1000SD_STD data
+k14 <- kmeans(expressionsTop1000SD_STD, centers = 14, nstart = 25)
+
+# Add the predicted cluster labels to the PCA data
+Top1000SDSTDPCA$predictedClusters = as.character(k14$cluster)
+
+# Plotting the PCA for PC1 vs. PC2 with color-coded predicted clusters
+ggplot(Top1000SDSTDPCA, aes(x = PC1, y = PC2, color = predictedClusters)) +
+  geom_point(size = 2) + theme_light()
+
+# Create a data frame to compare the predicted clusters with the tissue clusters
+clustersDF <- data.frame(Top1000SDSTDPCA$predictedClusters)
+colnames(clustersDF) <- c("predictedClusters")
+clustersDF$TissueClusters <- gene_expressions_tissue$TissueType
+
+# Count the number of shared clusters between predicted clusters and tissue clusters
+sharedClusters <- clustersDF %>%
+  group_by(TissueClusters) %>%
+  table()
+
+# Convert the shared clusters into a data frame
+sharedClusters <- data.frame(sharedClusters)
+
+clusterFrequencies <- sharedClusters %>%
+  group_by(TissueClusters) %>%
+  summarize(max(Freq))
+
+Accuracy <- sum(clusterFrequencies$`max(Freq)`) - 19
+Accuracy
+```
+
+
+
